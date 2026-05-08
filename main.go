@@ -613,6 +613,13 @@ func (a *api) routes() http.Handler {
 		}
 
 		namaLengkap := strings.TrimSpace(body.NamaLengkap)
+		email := strings.TrimSpace(body.Email)
+		telepon := strings.TrimSpace(body.Telepon)
+		domisili := strings.TrimSpace(body.Domisili)
+		pesan := strings.TrimSpace(body.Pesan)
+
+		log.Printf("POST /api/data-baru: nama=%q, email=%q, telepon=%q, domisili=%q, pesan=%q", namaLengkap, email, telepon, domisili, pesan)
+
 		if namaLengkap == "" {
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{
 				"ok":      false,
@@ -627,7 +634,7 @@ func (a *api) routes() http.Handler {
 		_, err := a.db.Exec(ctx, `
 			INSERT INTO data_baru (nama_lengkap, email, telepon, domisili, pesan)
 			VALUES ($1, $2, $3, $4, $5)
-		`, namaLengkap, strings.TrimSpace(body.Email), strings.TrimSpace(body.Telepon), strings.TrimSpace(body.Domisili), strings.TrimSpace(body.Pesan))
+		`, namaLengkap, email, telepon, domisili, pesan)
 		if err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":      false,
@@ -681,10 +688,12 @@ func (a *api) routes() http.Handler {
 		for rows.Next() {
 			var d dataBaru
 			if err := rows.Scan(&d.ID, &d.NamaLengkap, &d.Email, &d.Telepon, &d.Domisili, &d.Pesan, &d.IsRead, &d.CreatedAt); err != nil {
+				log.Printf("GET /api/data-baru: scan error: %v", err)
 				continue
 			}
 			data = append(data, d)
 		}
+		log.Printf("GET /api/data-baru: returning %d records, first telepon=%q", len(data), (func() string { if len(data) > 0 { return data[0].Telepon } return "" })())
 
 		a.writeJSON(w, http.StatusOK, map[string]any{
 			"ok":   true,
