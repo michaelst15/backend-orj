@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +41,7 @@ type adminSession struct {
 type api struct {
 	allowedOrigins  map[string]struct{}
 	allowAllCORS    bool
+	authSecret      []byte
 	db              *pgxpool.Pool
 	absensiKeyMu    sync.Mutex
 	absensiKey      absensiKeyCache
@@ -129,13 +133,23 @@ func main() {
 			conn.Close()
 			log.Fatalf("ensure data_baru table failed: %v", err)
 		}
+
+		if err := ensureAppConfigTable(dbCtx, conn); err != nil {
+			conn.Close()
+			log.Fatalf("ensure app_config table failed: %v", err)
+		}
 		db = conn
 		defer db.Close()
 	} else {
 		log.Printf("DATABASE_URL not set, running without database connection")
 	}
 
-	handler := newAPI(allowedOrigins, db).routes()
+	authSecret, err := loadOrCreateAuthSecret(context.Background(), db)
+	if err != nil {
+		log.Fatalf("load auth secret failed: %v", err)
+	}
+
+	handler := newAPI(allowedOrigins, db, authSecret).routes()
 
 	server := &http.Server{
 		Addr:              ":" + strconv.Itoa(port),
@@ -161,7 +175,7 @@ func main() {
 	_ = server.Shutdown(ctx)
 }
 
-func newAPI(allowedOrigins []string, db *pgxpool.Pool) *api {
+func newAPI(allowedOrigins []string, db *pgxpool.Pool, authSecret []byte) *api {
 	m := make(map[string]struct{}, len(allowedOrigins))
 	allowAll := false
 	for _, origin := range allowedOrigins {
@@ -178,6 +192,7 @@ func newAPI(allowedOrigins []string, db *pgxpool.Pool) *api {
 	return &api{
 		allowedOrigins:  m,
 		allowAllCORS:    allowAll,
+		authSecret:      authSecret,
 		db:              db,
 		sessionsByToken: make(map[string]*adminSession),
 		sessionsByEmail: make(map[string]*adminSession),
@@ -191,6 +206,120 @@ func generateToken() string {
 		b = []byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid()))
 	}
 	return fmt.Sprintf("%x", b)
+}
+
+func ensureAppConfigTable(ctx context.Context, db *pgxpool.Pool) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS app_config (
+			key text PRIMARY KEY,
+			value text NOT NULL,
+			updated_at timestamptz NOT NULL DEFAULT now()
+		)
+	`)
+	return err
+}
+
+func loadOrCreateAuthSecret(ctx context.Context, db *pgxpool.Pool) ([]byte, error) {
+	if v := strings.TrimSpace(os.Getenv("AUTH_SECRET")); v != "" {
+		return []byte(v), nil
+	}
+	if db == nil {
+		return nil, fmt.Errorf("AUTH_SECRET not set and database not available")
+	}
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var value string
+	err := db.QueryRow(cctx, `SELECT value FROM app_config WHERE key = 'auth_secret'`).Scan(&value)
+	if err == nil {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("auth_secret is empty in app_config")
+		}
+		return []byte(value), nil
+	}
+	if err != pgx.ErrNoRows {
+		return nil, err
+	}
+
+	value = generateToken()
+	_, err = db.Exec(cctx, `INSERT INTO app_config (key, value) VALUES ('auth_secret', $1)`, value)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(value), nil
+}
+
+type signedTokenPayload struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Exp   int64  `json:"exp"`
+}
+
+func signToken(secret []byte, email, name string, ttl time.Duration) (string, error) {
+	if len(secret) == 0 {
+		return "", fmt.Errorf("auth secret is empty")
+	}
+	exp := time.Now().Add(ttl).Unix()
+	payloadBytes, err := json.Marshal(signedTokenPayload{Email: email, Name: name, Exp: exp})
+	if err != nil {
+		return "", err
+	}
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadBytes)
+
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(payloadB64))
+	sig := mac.Sum(nil)
+	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
+	return payloadB64 + "." + sigB64, nil
+}
+
+func verifySignedToken(secret []byte, token string) (*adminSession, error) {
+	if token == "" {
+		return nil, fmt.Errorf("token is empty")
+	}
+	if len(secret) == 0 {
+		return nil, fmt.Errorf("auth secret is empty")
+	}
+	payloadPart, sigPart, ok := strings.Cut(token, ".")
+	if !ok || payloadPart == "" || sigPart == "" {
+		return nil, fmt.Errorf("token format invalid")
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err != nil {
+		return nil, fmt.Errorf("token payload invalid")
+	}
+	sigBytes, err := base64.RawURLEncoding.DecodeString(sigPart)
+	if err != nil {
+		return nil, fmt.Errorf("token signature invalid")
+	}
+
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(payloadPart))
+	expected := mac.Sum(nil)
+	if !hmac.Equal(expected, sigBytes) {
+		return nil, fmt.Errorf("token signature mismatch")
+	}
+
+	var payload signedTokenPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, fmt.Errorf("token payload invalid")
+	}
+	if payload.Email == "" || payload.Name == "" || payload.Exp == 0 {
+		return nil, fmt.Errorf("token payload invalid")
+	}
+	if time.Now().Unix() > payload.Exp {
+		return nil, fmt.Errorf("token expired")
+	}
+	return &adminSession{
+		Token:     token,
+		Email:     payload.Email,
+		Name:      payload.Name,
+		CreatedAt: time.Now(),
+	}, nil
 }
 
 func (a *api) createSession(email, name string) *adminSession {
@@ -446,6 +575,12 @@ func (a *api) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		session := a.getSession(token)
+		if session == nil && len(a.authSecret) > 0 {
+			if verified, _ := verifySignedToken(a.authSecret, token); verified != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
 		if session == nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -513,7 +648,6 @@ func (a *api) routes() http.Handler {
 
 		email := strings.TrimSpace(body.Email)
 		password := strings.TrimSpace(body.Password)
-		force := body.Force
 
 		if email == "" || password == "" {
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -543,37 +677,26 @@ func (a *api) routes() http.Handler {
 			return
 		}
 
-		a.sessionsMu.Lock()
-		existingSession, hasActiveSession := a.sessionsByEmail[email]
-		a.sessionsMu.Unlock()
-
-		if hasActiveSession && !force {
-			a.writeJSON(w, http.StatusConflict, map[string]any{
-				"ok":              false,
-				"message":         "Akun sedang digunakan",
-				"requireForce":    true,
-				"activeSessionAt": existingSession.CreatedAt.UnixMilli(),
+		ttl := 30 * 24 * time.Hour
+		sessionToken, err := signToken(a.authSecret, matchedAdmin.email, matchedAdmin.name, ttl)
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok":      false,
+				"message": "gagal membuat sesi",
 			})
 			return
 		}
 
-		session := a.createSession(matchedAdmin.email, matchedAdmin.name)
-
 		a.writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
-			"token": session.Token,
-			"email": session.Email,
-			"name":  session.Name,
+			"token": sessionToken,
+			"email": matchedAdmin.email,
+			"name":  matchedAdmin.name,
 		})
 	})
 
 	mux.HandleFunc("POST /api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		token := r.Header.Get("X-Session-Token")
-		if token == "" {
-			token = strings.TrimSpace(r.URL.Query().Get("token"))
-		}
-		a.destroySession(token)
 		a.writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true,
 		})
@@ -586,15 +709,14 @@ func (a *api) routes() http.Handler {
 			token = strings.TrimSpace(r.URL.Query().Get("token"))
 		}
 
-		session := a.getSession(token)
-		if session == nil {
+		session, err := verifySignedToken(a.authSecret, token)
+		if err != nil || session == nil {
 			a.writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"ok":      false,
 				"message": "sesi tidak valid",
 			})
 			return
 		}
-
 		a.writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
 			"email": session.Email,
