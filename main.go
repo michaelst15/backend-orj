@@ -114,6 +114,10 @@ func main() {
 			conn.Close()
 			log.Fatalf("ensure rekap_hadir table failed: %v", err)
 		}
+		if err := ensureDataBaruTable(dbCtx, conn); err != nil {
+			conn.Close()
+			log.Fatalf("ensure data_baru table failed: %v", err)
+		}
 		db = conn
 		defer db.Close()
 	} else {
@@ -233,6 +237,24 @@ func ensureRekapHadirTable(ctx context.Context, db *pgxpool.Pool) error {
 			ompu_label text NOT NULL,
 			kk integer NOT NULL DEFAULT 0,
 			updated_at timestamptz NOT NULL DEFAULT now()
+		)
+	`)
+	return err
+}
+
+func ensureDataBaruTable(ctx context.Context, db *pgxpool.Pool) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS data_baru (
+			id BIGSERIAL PRIMARY KEY,
+			nama_lengkap text NOT NULL,
+			email text,
+			domisili text,
+			pesan text,
+			is_read boolean NOT NULL DEFAULT false,
+			created_at timestamptz NOT NULL DEFAULT now()
 		)
 	`)
 	return err
@@ -560,6 +582,149 @@ func (a *api) routes() http.Handler {
 			"ok":    true,
 			"email": session.Email,
 			"name":  session.Name,
+		})
+	}))
+
+	mux.HandleFunc("POST /api/data-baru", func(w http.ResponseWriter, r *http.Request) {
+		if a.db == nil {
+			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"ok":      false,
+				"message": "database belum terhubung",
+			})
+			return
+		}
+
+		var body struct {
+			NamaLengkap string `json:"nama_lengkap"`
+			Email       string `json:"email"`
+			Domisili    string `json:"domisili"`
+			Pesan       string `json:"pesan"`
+		}
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&body); err != nil {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{
+				"ok":      false,
+				"message": "payload tidak valid",
+			})
+			return
+		}
+
+		namaLengkap := strings.TrimSpace(body.NamaLengkap)
+		if namaLengkap == "" {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{
+				"ok":      false,
+				"message": "nama lengkap wajib diisi",
+			})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err := a.db.Exec(ctx, `
+			INSERT INTO data_baru (nama_lengkap, email, domisili, pesan)
+			VALUES ($1, $2, $3, $4)
+		`, namaLengkap, strings.TrimSpace(body.Email), strings.TrimSpace(body.Domisili), strings.TrimSpace(body.Pesan))
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok":      false,
+				"message": "gagal menyimpan data",
+			})
+			return
+		}
+
+		a.writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+		})
+	})
+
+	mux.HandleFunc("GET /api/data-baru", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if a.db == nil {
+			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"ok":      false,
+				"message": "database belum terhubung",
+			})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		rows, err := a.db.Query(ctx, `
+			SELECT id, nama_lengkap, email, domisili, pesan, is_read, created_at
+			FROM data_baru
+			ORDER BY created_at DESC
+		`)
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok":      false,
+				"message": "gagal mengambil data",
+			})
+			return
+		}
+		defer rows.Close()
+
+		type dataBaru struct {
+			ID          int64     `json:"id"`
+			NamaLengkap string    `json:"nama_lengkap"`
+			Email       string    `json:"email"`
+			Domisili    string    `json:"domisili"`
+			Pesan       string    `json:"pesan"`
+			IsRead      bool      `json:"is_read"`
+			CreatedAt   time.Time `json:"created_at"`
+		}
+		var data []dataBaru
+		for rows.Next() {
+			var d dataBaru
+			if err := rows.Scan(&d.ID, &d.NamaLengkap, &d.Email, &d.Domisili, &d.Pesan, &d.IsRead, &d.CreatedAt); err != nil {
+				continue
+			}
+			data = append(data, d)
+		}
+
+		a.writeJSON(w, http.StatusOK, map[string]any{
+			"ok":   true,
+			"data": data,
+		})
+	}))
+
+	mux.HandleFunc("PUT /api/data-baru/{id}/read", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if a.db == nil {
+			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"ok":      false,
+				"message": "database belum terhubung",
+			})
+			return
+		}
+
+		idStr := r.PathValue("id")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{
+				"ok":      false,
+				"message": "id tidak valid",
+			})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = a.db.Exec(ctx, `
+			UPDATE data_baru
+			SET is_read = true
+			WHERE id = $1
+		`, id)
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok":      false,
+				"message": "gagal memperbarui status",
+			})
+			return
+		}
+
+		a.writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
 		})
 	}))
 
