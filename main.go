@@ -83,6 +83,16 @@ func main() {
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
 	})
+	hasWildcard := false
+	for _, o := range allowedOrigins {
+		if strings.TrimSpace(o) == "*" {
+			hasWildcard = true
+			break
+		}
+	}
+	if !hasWildcard {
+		allowedOrigins = append(allowedOrigins, "*")
+	}
 
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 
@@ -453,7 +463,7 @@ func (a *api) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 func (a *api) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		dbOK := false
 		if a.db != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
@@ -465,7 +475,11 @@ func (a *api) routes() http.Handler {
 			"dbOk": dbOK,
 			"time": time.Now().UTC().Format(time.RFC3339),
 		})
-	})
+	}
+
+	mux.HandleFunc("GET /health", healthHandler)
+	mux.HandleFunc("GET /kaithhealthcheck", healthHandler)
+	mux.HandleFunc("GET /kaithheathcheck", healthHandler)
 
 	mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
