@@ -186,11 +186,6 @@ func (a *api) createSession(email, name string) *adminSession {
 	a.sessionsMu.Lock()
 	defer a.sessionsMu.Unlock()
 
-	if oldSession, ok := a.sessionsByEmail[email]; ok {
-		delete(a.sessionsByToken, oldSession.Token)
-		delete(a.sessionsByEmail, email)
-	}
-
 	token := generateToken()
 	session := &adminSession{
 		Token:     token,
