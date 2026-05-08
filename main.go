@@ -618,8 +618,6 @@ func (a *api) routes() http.Handler {
 		domisili := strings.TrimSpace(body.Domisili)
 		pesan := strings.TrimSpace(body.Pesan)
 
-		log.Printf("POST /api/data-baru: nama=%q, email=%q, telepon=%q, domisili=%q, pesan=%q", namaLengkap, email, telepon, domisili, pesan)
-
 		if namaLengkap == "" {
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{
 				"ok":      false,
@@ -688,12 +686,10 @@ func (a *api) routes() http.Handler {
 		for rows.Next() {
 			var d dataBaru
 			if err := rows.Scan(&d.ID, &d.NamaLengkap, &d.Email, &d.Telepon, &d.Domisili, &d.Pesan, &d.IsRead, &d.CreatedAt); err != nil {
-				log.Printf("GET /api/data-baru: scan error: %v", err)
 				continue
 			}
 			data = append(data, d)
 		}
-		log.Printf("GET /api/data-baru: returning %d records, first telepon=%q", len(data), (func() string { if len(data) > 0 { return data[0].Telepon } return "" })())
 
 		a.writeJSON(w, http.StatusOK, map[string]any{
 			"ok":   true,
