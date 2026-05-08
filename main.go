@@ -79,6 +79,7 @@ func main() {
 
 	port := envInt("PORT", 8080)
 	allowedOrigins := envStrings("CORS_ORIGINS", []string{
+		"*",
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
 	})
