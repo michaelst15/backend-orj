@@ -246,11 +246,18 @@ func ensureDataBaruTable(ctx context.Context, db *pgxpool.Pool) error {
 			id BIGSERIAL PRIMARY KEY,
 			nama_lengkap text NOT NULL,
 			email text,
+			telepon text,
 			domisili text,
 			pesan text,
 			is_read boolean NOT NULL DEFAULT false,
 			created_at timestamptz NOT NULL DEFAULT now()
 		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(ctx, `
+		ALTER TABLE data_baru ADD COLUMN IF NOT EXISTS telepon text
 	`)
 	return err
 }
@@ -592,6 +599,7 @@ func (a *api) routes() http.Handler {
 		var body struct {
 			NamaLengkap string `json:"nama_lengkap"`
 			Email       string `json:"email"`
+			Telepon     string `json:"telepon"`
 			Domisili    string `json:"domisili"`
 			Pesan       string `json:"pesan"`
 		}
@@ -617,9 +625,9 @@ func (a *api) routes() http.Handler {
 		defer cancel()
 
 		_, err := a.db.Exec(ctx, `
-			INSERT INTO data_baru (nama_lengkap, email, domisili, pesan)
-			VALUES ($1, $2, $3, $4)
-		`, namaLengkap, strings.TrimSpace(body.Email), strings.TrimSpace(body.Domisili), strings.TrimSpace(body.Pesan))
+			INSERT INTO data_baru (nama_lengkap, email, telepon, domisili, pesan)
+			VALUES ($1, $2, $3, $4, $5)
+		`, namaLengkap, strings.TrimSpace(body.Email), strings.TrimSpace(body.Telepon), strings.TrimSpace(body.Domisili), strings.TrimSpace(body.Pesan))
 		if err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":      false,
@@ -646,7 +654,7 @@ func (a *api) routes() http.Handler {
 		defer cancel()
 
 		rows, err := a.db.Query(ctx, `
-			SELECT id, nama_lengkap, email, domisili, pesan, is_read, created_at
+			SELECT id, nama_lengkap, email, telepon, domisili, pesan, is_read, created_at
 			FROM data_baru
 			ORDER BY created_at DESC
 		`)
@@ -663,6 +671,7 @@ func (a *api) routes() http.Handler {
 			ID          int64     `json:"id"`
 			NamaLengkap string    `json:"nama_lengkap"`
 			Email       string    `json:"email"`
+			Telepon     string    `json:"telepon"`
 			Domisili    string    `json:"domisili"`
 			Pesan       string    `json:"pesan"`
 			IsRead      bool      `json:"is_read"`
@@ -671,7 +680,7 @@ func (a *api) routes() http.Handler {
 		var data []dataBaru
 		for rows.Next() {
 			var d dataBaru
-			if err := rows.Scan(&d.ID, &d.NamaLengkap, &d.Email, &d.Domisili, &d.Pesan, &d.IsRead, &d.CreatedAt); err != nil {
+			if err := rows.Scan(&d.ID, &d.NamaLengkap, &d.Email, &d.Telepon, &d.Domisili, &d.Pesan, &d.IsRead, &d.CreatedAt); err != nil {
 				continue
 			}
 			data = append(data, d)
