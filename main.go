@@ -616,7 +616,11 @@ func (a *api) routes() http.Handler {
 	mux.HandleFunc("GET /kaithhealthcheck", healthHandler)
 	mux.HandleFunc("GET /kaithheathcheck", healthHandler)
 
-	mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {
+	loginHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Cache-Control", "no-store")
 
 		adminAccounts := []struct {
@@ -693,16 +697,30 @@ func (a *api) routes() http.Handler {
 			"email": matchedAdmin.email,
 			"name":  matchedAdmin.name,
 		})
-	})
+	}
 
-	mux.HandleFunc("POST /api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/auth/login", loginHandler)
+	mux.HandleFunc("/api/auth/login", loginHandler)
+
+	logoutHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		a.writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true,
 		})
-	})
+	}
 
-	mux.HandleFunc("GET /api/auth/me", a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/auth/logout", logoutHandler)
+	mux.HandleFunc("/api/auth/logout", logoutHandler)
+
+	meHandler := a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		token := r.Header.Get("X-Session-Token")
 		if token == "" {
@@ -722,7 +740,10 @@ func (a *api) routes() http.Handler {
 			"email": session.Email,
 			"name":  session.Name,
 		})
-	}))
+	})
+
+	mux.HandleFunc("GET /api/auth/me", meHandler)
+	mux.HandleFunc("/api/auth/me", meHandler)
 
 	mux.HandleFunc("POST /api/data-baru", func(w http.ResponseWriter, r *http.Request) {
 		if a.db == nil {
