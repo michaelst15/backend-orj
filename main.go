@@ -628,8 +628,8 @@ func (a *api) routes() http.Handler {
 		})
 	}
 
-	mux.HandleFunc("GET /", rootHandler)
-	mux.HandleFunc("/", rootHandler)
+	mux.HandleFunc("GET /{$}", rootHandler)
+	mux.HandleFunc("HEAD /{$}", rootHandler)
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /kaithhealthcheck", healthHandler)
 	mux.HandleFunc("GET /kaithheathcheck", healthHandler)
@@ -718,7 +718,6 @@ func (a *api) routes() http.Handler {
 	}
 
 	mux.HandleFunc("POST /api/auth/login", loginHandler)
-	mux.HandleFunc("/api/auth/login", loginHandler)
 
 	logoutHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -732,7 +731,6 @@ func (a *api) routes() http.Handler {
 	}
 
 	mux.HandleFunc("POST /api/auth/logout", logoutHandler)
-	mux.HandleFunc("/api/auth/logout", logoutHandler)
 
 	meHandler := a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -761,7 +759,6 @@ func (a *api) routes() http.Handler {
 	})
 
 	mux.HandleFunc("GET /api/auth/me", meHandler)
-	mux.HandleFunc("/api/auth/me", meHandler)
 
 	mux.HandleFunc("POST /api/data-baru", func(w http.ResponseWriter, r *http.Request) {
 		if a.db == nil {
