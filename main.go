@@ -612,6 +612,24 @@ func (a *api) routes() http.Handler {
 		})
 	}
 
+	rootHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"service": "orj-backend",
+			"paths": []string{
+				"/health",
+				"/api/auth/login",
+				"/api/auth/me",
+			},
+		})
+	}
+
+	mux.HandleFunc("GET /", rootHandler)
+	mux.HandleFunc("/", rootHandler)
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /kaithhealthcheck", healthHandler)
 	mux.HandleFunc("GET /kaithheathcheck", healthHandler)
